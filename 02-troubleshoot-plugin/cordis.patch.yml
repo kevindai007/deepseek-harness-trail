@@ -1,0 +1,16 @@
+# Layer added to a dsh profile by `dsh plugin --profile <name> add ./02-troubleshoot-plugin`.
+# Every value below can be overridden per profile in that profile's cordis.patch.yml.
+- insert:
+    - id: trail-k8s-tools
+      name: 'dsh-trail-troubleshoot/tools'
+      config:
+        kubectlPath: kubectl          # mock mode: put mock/bin first on PATH before starting dsh
+        defaultNamespace: trail-dev
+        allowedNamespaces: [trail-dev]
+        maxSearchMatches: 50
+        timeoutMs: 30000
+    - id: trail-k8s-policy
+      name: 'dsh-trail-troubleshoot/policy'
+      config:
+        askTools: [k8s_restart_deployment]
+        allowedNamespaces: [trail-dev]

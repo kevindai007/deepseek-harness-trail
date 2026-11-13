@@ -1,0 +1,40 @@
+{
+  "name": "dsh-trail-troubleshoot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Kubernetes troubleshooting tools and an approval policy for DeepSeek Harness (talk demo).",
+  "type": "module",
+  "main": "dist/tools.js",
+  "exports": {
+    "./tools": "./dist/tools.js",
+    "./policy": "./dist/policy.js"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "~3.19.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "~3.19.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "dsh": ">=0.2.2-rc.1 <0.3.0"
+  }
+}
