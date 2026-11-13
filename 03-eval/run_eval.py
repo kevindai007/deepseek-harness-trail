@@ -14,9 +14,13 @@ write the agent attempts is denied and counted.
 Prerequisites (see README):
     pip install -r 03-eval/requirements.txt
     dsh plugin --profile sdk add ./02-troubleshoot-plugin     # with DSH_HOME set
-    export DEEPSEEK_API_KEY=...
+    export OPENAI_API_KEY=...
 
     python 03-eval/run_eval.py --dsh-home "$DSH_HOME" --repeat 3
+
+By default the agent runs on OpenAI through ./openai.patch.yml. To run on
+DeepSeek instead: --provider deepseek-official --model deepseek-v4-flash --no-patch
+(with DEEPSEEK_API_KEY set).
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ from deepseek_harness import DeepSeekHarness
 REPO = Path(__file__).resolve().parent.parent
 SKILL_DIR = REPO / ".dsh" / "skills"
 MOCK_BIN = REPO / "mock" / "bin"
+OPENAI_PATCH = REPO / "openai.patch.yml"
 
 
 @dataclass
@@ -78,8 +83,9 @@ def run_case(case: dict, variant: str, attempt: int, args: argparse.Namespace) -
         "MOCK_STATE_DIR": str(state_dir),
     }
     started = time.monotonic()
-    kwargs = {"model": args.model} if args.model else {}
-    with DeepSeekHarness(profile=args.profile, dsh_home=str(args.dsh_home), cwd=str(ws), env=env, **kwargs) as harness:
+    patches = tuple(str(p) for p in args.patch)
+    with DeepSeekHarness(profile=args.profile, dsh_home=str(args.dsh_home), cwd=str(ws), env=env,
+                         provider=args.provider, model=args.model, patches=patches) as harness:
         result = harness.run(case["prompt"])
     seconds = time.monotonic() - started
 
@@ -120,13 +126,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dsh-home", type=Path, default=Path(os.environ.get("DSH_HOME", Path.home() / ".dsh")))
     parser.add_argument("--profile", default="sdk")
-    parser.add_argument("--model", default=os.environ.get("DSH_MODEL"))
+    parser.add_argument("--provider", default=os.environ.get("DSH_PROVIDER", "openai"),
+                        help="model provider route: openai (default) or deepseek-official")
+    parser.add_argument("--model", default=os.environ.get("DSH_MODEL", "gpt-5.5"))
+    parser.add_argument("--patch", type=Path, action="append", default=None,
+                        help="extra dsh patch file, repeatable; default ./openai.patch.yml")
+    parser.add_argument("--no-patch", action="store_true", help="do not apply any patch (e.g. to run on DeepSeek)")
     parser.add_argument("--variants", default="no-skill,skill")
     parser.add_argument("--cases", default=None, help="comma-separated case ids; default all")
     parser.add_argument("--repeat", type=int, default=1, help="runs per case and variant; agents are not deterministic")
     parser.add_argument("--real", dest="mock", action="store_false", help="use the real kubectl on PATH instead of mock/bin")
     parser.add_argument("--out", type=Path, default=REPO / "eval-results")
     args = parser.parse_args()
+    args.patch = [] if args.no_patch else (args.patch or [OPENAI_PATCH])
 
     cases = json.loads((Path(__file__).parent / "cases.json").read_text())
     if args.cases:

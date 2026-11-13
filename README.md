@@ -18,8 +18,32 @@
 - Node.js **>= 24.9**（dsh 的要求）
 - dsh：`npm i -g @deepseek-ai/dsh`（本仓库按 `0.2.2-rc.1` 开发验证）
 - Python >= 3.10
-- DeepSeek API key：`export DEEPSEEK_API_KEY=sk-...`
+- OpenAI API key：`export OPENAI_API_KEY=sk-...`（默认用 OpenAI，见下一节；想用 DeepSeek 也可以切回去）
 - 真实模式还需要：本机 `kubectl` 能访问 dev 集群，并且有 `trail-dev` 命名空间的读权限
+
+## 模型：默认用 OpenAI
+
+dsh 自带两个模型适配器：直连 DeepSeek 的 `llm-deepseek`，以及走 pi-ai 的多提供方适配器 `llm-pi-ai`（OpenAI 走 Responses API）。仓库根目录的 [`openai.patch.yml`](openai.patch.yml) 给 `llm-pi-ai` 配上 `openai` 路由，并把默认模型改成 `openai / gpt-5.5`。换模型只改这个文件里的 `model`。
+
+两种用法，二选一：
+
+```bash
+# 1. 每次启动时带上 patch（不改 profile）
+dsh web --patch ./openai.patch.yml
+
+# 2. 一次性写进 profile，之后直接 dsh web
+cat openai.patch.yml >> "$DSH_HOME/profiles/web/cordis.patch.yml"   # 先删掉文件里原来的 []
+```
+
+用代理或公司网关时，在 `openai` 下面加一行 `baseURL: https://你的网关/v1`。
+
+| 组件 | 默认 | 切回 DeepSeek |
+| --- | --- | --- |
+| `01-mini-loop` | OpenAI Chat Completions，`OPENAI_MODEL` 默认 `gpt-5.5` | DeepSeek 也提供 OpenAI 兼容接口：设 `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_MODEL` 为 DeepSeek 的值即可，代码不用改 |
+| dsh（Q1、Q5–Q12） | `--patch ./openai.patch.yml` | 不带 patch，设 `DEEPSEEK_API_KEY` |
+| `03-eval` | `--provider openai --model gpt-5.5`，自动带 `openai.patch.yml` | `--provider deepseek-official --model deepseek-v4-flash --no-patch` |
+
+注意：dsh 的网页搜索工具默认走 DeepSeek，只设 OpenAI key 时用不了它。排障 demo 用不到网页搜索。
 
 ## 两种运行模式
 
@@ -88,13 +112,13 @@ pip install -r 03-eval/requirements.txt
 
 ## 按问题的演示命令
 
-下面的命令默认已经设置了 `DEEPSEEK_API_KEY`，mock 模式下还设置了 `PATH` 和 `MOCK_SCENARIO`。
+下面的命令默认已经设置了 `OPENAI_API_KEY`，并且按上一节把 `openai.patch.yml` 写进了 profile（否则每个 `dsh` 命令后面加 `--patch ./openai.patch.yml`）；mock 模式下还设置了 `PATH` 和 `MOCK_SCENARIO`。
 
 | 问题 | 演示 | 命令 |
 | --- | --- | --- |
 | Q1 同一个模型，为什么在 agent 里就能排障 | 先在聊天框里问，再让 agent 自己查 | `MOCK_SCENARIO=db-pool dsh web` |
 | Q2 怎么让模型动手 | 朴素 loop 跑通一次 | `python 01-mini-loop/mini_agent.py "dev 环境下单接口报 500，帮我查一下原因"` |
-| Q3 什么时候停、出错怎么办 | 看 stop_reason、错误回传、`--max-steps` | `MOCK_SCENARIO=oom python 01-mini-loop/mini_agent.py --max-steps 4 "inventory-service 在重启，看看为什么"` |
+| Q3 什么时候停、出错怎么办 | 看 finish_reason、错误回传、`--max-steps` | `MOCK_SCENARIO=oom python 01-mini-loop/mini_agent.py --max-steps 4 "inventory-service 在重启，看看为什么"` |
 | Q4 无状态的模型怎么"记住" | 每步打印的 input tokens 一路上涨 | 同上，看每步的 token 输出 |
 | 玩具翻车四连 | 大日志撑爆上下文、被日志注入、原地打转、命令写错 | `MOCK_SCENARIO=big-log` / `injection` 跑 `mini_agent.py` |
 | Q5 工具怎么设计 | `k8s_search_logs` vs 裸 `bash kubectl` | `dsh web`，对比两种问法的调用轨迹 |
@@ -123,4 +147,6 @@ pip install -r 03-eval/requirements.txt
 
 以下内容已经用 mock kubectl + 一个本地假的 Messages API 服务端到端跑过：插件加载、6 个工具、日志搜索、`kubectl delete` 被拒、重启在无审批通道时被拒、大日志被 spill 截断、朴素 loop、评测脚本（skill 只在 skill 组出现）、PTC 开关。
 
-**还没有验证的：** 真实 DeepSeek API 上的模型行为和模型 id、真实集群。第一次彩排时请先用 mock 模式跑一遍 Q13 的评测确认 API 联通。
+切到 OpenAI 之后也用假的 OpenAI 服务验证过：dsh 通过 `openai.patch.yml` 把请求发到 `/v1/responses`，带上了 6 个 `k8s_*` 工具；朴素 loop 的工具调用、报错回传和步数上限；评测脚本通过 SDK 带上 patch 和 provider。
+
+**还没有验证的：** 真实 OpenAI / DeepSeek API 上的模型行为、真实集群。第一次彩排时请先用 mock 模式跑一遍 Q13 的评测确认 API 联通。
