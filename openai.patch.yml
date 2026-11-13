@@ -1,0 +1,19 @@
+# Run dsh against OpenAI instead of DeepSeek, without touching the profile:
+#
+#   export OPENAI_API_KEY=sk-...
+#   dsh web --patch ./openai.patch.yml
+#
+# The model requests go through the built-in pi-ai adapter (row `llm-pi-ai`,
+# OpenAI Responses API). To use a proxy or an OpenAI-compatible gateway, add
+# `baseURL: https://your-gateway.example/v1` under `openai`.
+- id: llm-pi-ai
+  config:
+    providers:
+      openai:
+        apiKeyEnv: OPENAI_API_KEY
+
+# Make OpenAI the default model for new sessions. Change `model` here.
+- id: agent-default-model
+  config:
+    provider: openai
+    model: gpt-5.5
