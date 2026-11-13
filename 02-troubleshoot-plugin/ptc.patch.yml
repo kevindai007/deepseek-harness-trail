@@ -1,0 +1,9 @@
+# Q11: switch the agent from native tool calling to PTC (programmatic tool calling).
+# The model then sees one `run_code` tool and calls our k8s_* tools from code:
+#   const pods = await tools.k8s_list_pods({})
+# Usage: dsh web --patch ./02-troubleshoot-plugin/ptc.patch.yml
+- id: tool-executor-native
+  disabled: true
+
+- id: tool-executor-ptc
+  disabled: false

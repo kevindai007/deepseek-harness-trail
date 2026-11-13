@@ -1,0 +1,203 @@
+#!/usr/bin/env node
+// A fake kubectl that serves the fault scenarios in ../scenarios.mjs.
+//
+// Put this directory first on PATH to run every demo without a cluster:
+//   export PATH="$PWD/mock/bin:$PATH"
+//   export MOCK_SCENARIO=db-pool      # db-pool | oom | bad-config | big-log | injection
+//
+// Read commands print realistic output. Write commands (rollout restart,
+// delete, scale, apply, patch, edit) change nothing; they are appended to
+// .mock-state/writes.log so the demo can show what the agent tried to do.
+
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { NAMESPACE, loadScenario } from '../scenarios.mjs'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const stateDir = process.env.MOCK_STATE_DIR || resolve(here, '../../.mock-state')
+
+function fail(message, code = 1) {
+  process.stderr.write(`error: ${message}\n`)
+  process.exit(code)
+}
+
+// ---- argument parsing ------------------------------------------------------
+const VALUE_FLAGS = new Map([
+  ['-n', 'namespace'], ['--namespace', 'namespace'],
+  ['-l', 'selector'], ['--selector', 'selector'],
+  ['-o', 'output'], ['--output', 'output'],
+  ['-c', 'container'], ['--container', 'container'],
+  ['--tail', 'tail'], ['--since', 'since'], ['--context', 'context'],
+  ['--sort-by', 'sortBy'], ['--field-selector', 'fieldSelector'], ['--replicas', 'replicas'],
+])
+const BOOL_FLAGS = new Map([
+  ['-p', 'previous'], ['--previous', 'previous'], ['-A', 'allNamespaces'], ['--all-namespaces', 'allNamespaces'],
+  ['-f', 'follow'], ['--follow', 'follow'], ['--timestamps', 'timestamps'], ['--client', 'client'],
+])
+
+const flags = {}
+const positional = []
+const argv = process.argv.slice(2)
+for (let i = 0; i < argv.length; i++) {
+  const arg = argv[i]
+  const eq = arg.indexOf('=')
+  const key = arg.startsWith('-') && eq > 0 ? arg.slice(0, eq) : arg
+  if (VALUE_FLAGS.has(key)) {
+    flags[VALUE_FLAGS.get(key)] = eq > 0 && arg.startsWith('-') ? arg.slice(eq + 1) : argv[++i]
+  } else if (BOOL_FLAGS.has(key)) {
+    flags[BOOL_FLAGS.get(key)] = true
+  } else if (arg.startsWith('-')) {
+    fail(`unknown flag: ${arg} (mock kubectl supports a subset of flags)`)
+  } else {
+    positional.push(arg)
+  }
+}
+if (flags.follow) fail('--follow is not supported by the mock; use --tail instead')
+
+const scenario = loadScenario()
+const namespace = flags.namespace || NAMESPACE
+const inNamespace = flags.allNamespaces || namespace === NAMESPACE
+
+// ---- helpers ---------------------------------------------------------------
+function matchesSelector(pod) {
+  if (!flags.selector) return true
+  return flags.selector.split(',').every(term => {
+    const [k, v] = term.split('=')
+    return k.trim() === 'app' && pod.app === v?.trim()
+  })
+}
+
+function pods() {
+  return inNamespace ? scenario.pods.filter(matchesSelector) : []
+}
+
+function findPod(ref) {
+  const name = ref.replace(/^pods?\//, '')
+  const byDeployment = ref.match(/^(?:deploy|deployment|deployments)\/(.+)$/)
+  const pod = byDeployment
+    ? scenario.pods.find(p => p.app === byDeployment[1])
+    : scenario.pods.find(p => p.name === name)
+  if (!pod || !inNamespace) fail(`pods "${name}" not found`)
+  return pod
+}
+
+function table(rows, headers) {
+  const widths = headers.map((h, i) => Math.max(h.length, ...rows.map(r => String(r[i]).length)))
+  const line = cells => cells.map((c, i) => String(c).padEnd(widths[i] + 3)).join('').trimEnd()
+  return [line(headers), ...rows.map(line)].join('\n')
+}
+
+function sinceFilter(lines) {
+  if (!flags.since) return lines
+  const m = String(flags.since).match(/^(\d+)([smh])$/)
+  if (!m) fail(`invalid --since value "${flags.since}"`)
+  const seconds = Number(m[1]) * { s: 1, m: 60, h: 3600 }[m[2]]
+  const stamps = lines.map(l => Date.parse(l.slice(0, 24))).filter(Number.isFinite)
+  if (stamps.length === 0) return lines
+  const cutoff = Math.max(...stamps) - seconds * 1000
+  return lines.filter(l => {
+    const t = Date.parse(l.slice(0, 24))
+    return !Number.isFinite(t) || t >= cutoff
+  })
+}
+
+function recordWrite() {
+  mkdirSync(stateDir, { recursive: true })
+  appendFileSync(join(stateDir, 'writes.log'), `${new Date().toISOString()} kubectl ${argv.join(' ')}\n`)
+}
+
+// ---- commands --------------------------------------------------------------
+const [verb, ...rest] = positional
+
+switch (verb) {
+  case 'version':
+    console.log('Client Version: v1.31.0 (mock)')
+    break
+
+  case 'config':
+    if (rest[0] === 'current-context') console.log('mock-trail-dev')
+    else fail('mock kubectl only supports "config current-context"')
+    break
+
+  case 'get': {
+    const kind = rest[0]
+    if (['pods', 'pod', 'po'].includes(kind)) {
+      let list = pods()
+      if (rest[1]) list = list.filter(p => p.name === rest[1])
+      if (flags.output === 'json') {
+        console.log(JSON.stringify({
+          apiVersion: 'v1', kind: 'List',
+          items: list.map(p => ({
+            metadata: { name: p.name, namespace: NAMESPACE, labels: { app: p.app } },
+            spec: { nodeName: p.node },
+            status: {
+              phase: p.phase,
+              containerStatuses: [{
+                name: p.app, ready: p.ready, restartCount: p.restarts,
+                state: p.status ? { waiting: { reason: p.status } } : { running: {} },
+              }],
+            },
+          })),
+        }, null, 2))
+      } else if (list.length === 0) {
+        console.log(`No resources found in ${namespace} namespace.`)
+      } else {
+        const wide = flags.output === 'wide'
+        const headers = ['NAME', 'READY', 'STATUS', 'RESTARTS', 'AGE', ...(wide ? ['NODE'] : [])]
+        console.log(table(list.map(p => [p.name, p.ready ? '1/1' : '0/1', p.status || p.phase, p.restarts, p.age, ...(wide ? [p.node] : [])]), headers))
+      }
+    } else if (['deployments', 'deployment', 'deploy'].includes(kind)) {
+      const list = inNamespace ? scenario.deployments : []
+      if (list.length === 0) console.log(`No resources found in ${namespace} namespace.`)
+      else console.log(table(list.map(d => [d.name, `${d.ready}/${d.desired}`, d.desired, d.ready, '2d']), ['NAME', 'READY', 'UP-TO-DATE', 'AVAILABLE', 'AGE']))
+    } else if (['events', 'event', 'ev'].includes(kind)) {
+      const list = inNamespace ? [...scenario.events].sort((a, b) => a.time.localeCompare(b.time)) : []
+      if (flags.output === 'json') {
+        console.log(JSON.stringify({
+          kind: 'List',
+          items: list.map(e => ({ lastTimestamp: e.time, type: e.type, reason: e.reason, involvedObject: { kind: e.object.split('/')[0], name: e.object.split('/')[1] }, message: e.message })),
+        }, null, 2))
+      } else if (list.length === 0) {
+        console.log(`No resources found in ${namespace} namespace.`)
+      } else {
+        console.log(table(list.map(e => [e.time, e.type, e.reason, e.object, e.message]), ['LAST SEEN', 'TYPE', 'REASON', 'OBJECT', 'MESSAGE']))
+      }
+    } else {
+      fail(`mock kubectl cannot get "${kind}"; supported: pods, deployments, events`)
+    }
+    break
+  }
+
+  case 'describe': {
+    let ref = rest[0]
+    if (['pod', 'pods', 'po'].includes(ref)) ref = rest[1]
+    if (!ref) fail('describe needs a pod name')
+    console.log(findPod(ref).describe)
+    break
+  }
+
+  case 'logs': {
+    if (!rest[0]) fail('logs needs a pod name')
+    const pod = findPod(rest[0])
+    let lines = flags.previous ? (pod.previousLogs ?? fail(`previous terminated container "${pod.app}" in pod "${pod.name}" not found`)) : pod.logs
+    lines = sinceFilter(lines)
+    if (flags.tail !== undefined && Number(flags.tail) >= 0) lines = lines.slice(-Number(flags.tail))
+    process.stdout.write(lines.join('\n') + '\n')
+    break
+  }
+
+  case 'rollout':
+  case 'delete':
+  case 'scale':
+  case 'apply':
+  case 'patch':
+  case 'edit':
+  case 'set':
+    recordWrite()
+    console.log(`(mock) ${argv.join(' ')}: accepted, nothing was changed. Recorded in .mock-state/writes.log`)
+    break
+
+  default:
+    fail(`mock kubectl does not support "${verb ?? ''}"`)
+}
